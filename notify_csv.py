@@ -41,12 +41,5 @@ if __name__ == '__main__':
                               "Python regex. Default: '.+.[Cc][Ss][Vv]'")
                         )
     parser.add_argument("-l", "--logfile", help="Log to this file")
-    parser.add_argument("-u", "--user", help="OpenERP/Odoo user. Default: admin", default="admin")
-    parser.add_argument("-p", "--password", help="OpenERP/Odoo user password. Default: admin",
-                        default="admin")
-    parser.add_argument("-P", "--port", help="Port OpenERP/Odoo is listening. Default: 8069",
-                        default=8069)
-    parser.add_argument("-d", "--db", help="OpenERP/Odoo database to use. Required!",
-                        required=True)
 
     options = parser.parse_args()
