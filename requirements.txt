@@ -1,2 +1,3 @@
+fades
 sh
 pyinotify

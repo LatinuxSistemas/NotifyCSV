@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env fades
 # -*- coding: utf-8 -*-
 ##############################################################################
 #
@@ -22,9 +22,31 @@
 #
 ##############################################################################
 
-import sphinx
-import csv2odoo
-import sh
+import sh  # fades.pypi
+import pyinotify  # fades.pypi
+import csv
 
+if __name__ == '__main__':
+    PROGRAM_NAME = 'NotifyCSV'
+    import logging
+    logger = logging.getLogger(PROGRAM_NAME)
 
+    from argparse import ArgumentParser
 
+    parser = ArgumentParser(prog=PROGRAM_NAME)
+
+    parser.add_argument("-s", "--separator", help="Specify field separator. Default: '\\t'")
+    parser.add_argument("-m", "--match", default='.+.[Cc][Ss][Vv]',
+                        help=("Use this regex to match names in watched dir. Can be any valid "
+                              "Python regex. Default: '.+.[Cc][Ss][Vv]'")
+                        )
+    parser.add_argument("-l", "--logfile", help="Log to this file")
+    parser.add_argument("-u", "--user", help="OpenERP/Odoo user. Default: admin", default="admin")
+    parser.add_argument("-p", "--password", help="OpenERP/Odoo user password. Default: admin",
+                        default="admin")
+    parser.add_argument("-P", "--port", help="Port OpenERP/Odoo is listening. Default: 8069",
+                        default=8069)
+    parser.add_argument("-d", "--db", help="OpenERP/Odoo database to use. Required!",
+                        required=True)
+
+    options = parser.parse_args()
