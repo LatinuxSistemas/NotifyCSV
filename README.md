@@ -42,5 +42,6 @@ optional arguments:
                         Dir to watch. Default: /home/gabriel/csv-input
 
 ~$ fades notify_csv.py 
+
 2015-06-01 12:45:58,940 NotifyCSV INFO: Started
 2015-06-01 12:45:58,940 NotifyCSV INFO: Starting event handler
