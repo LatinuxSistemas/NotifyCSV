@@ -3,6 +3,7 @@ NotifyCSV
 
 Watch a directory and parse its .csv files
 
+
 Install it
 ----------
 
@@ -12,22 +13,18 @@ You need Python3.x to run it
 
 Install [fades](https://github.com/PyAr/fades) (I prefer to clone it rather than gettin it from pip) and then simply run:
 
-::
     ~$ fades notify_csv.py
 
 It's running!
 
 ### Long install 
 
-::
-
     ~$ pip3 install sh pyinotify erppeek
     ~$ python notify_csv.py  # Remember: it must be Python 3+
 
+
 Use it 
 ------
-
-::
 
     ~$ fades notify_csv.py -h
 
