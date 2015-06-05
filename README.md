@@ -1,7 +1,7 @@
 NotifyCSV
 =========
 
-Watch a directory and parse its .csv files
+Watch a directory and parse .csv files. Now it can import product objects into [Openerp/Odoo](https://github.com/odoo/odoo)
 
 
 Install it
