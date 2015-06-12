@@ -23,22 +23,43 @@
 ##############################################################################
 
 import csv
-import multiprocessing
+import logging
+from multiprocessing import Process
 import os
 import re
 import sys
 import time
-# from multiprocessing.pool import Pool
+import traceback
 
-import erppeek  # fades.pypi
 import sh  # fades.pypi
 from pyinotify import (IN_CLOSE_WRITE, IN_DELETE, IN_DELETE_SELF,  # fades.pypi
-                       Notifier, ProcessEvent, WatchManager)
+                       ProcessEvent, ThreadedNotifier, WatchManager)
+
+import erppeek  # fades.pypi
+
+PROGNAME = 'NotifyCSV'
 
 
 class OdooInstance(object):
+    """
+    Manages connections to the Odoo server.
+    """
 
     def __init__(self, logger, **connection_data):
+        """
+        Instanciate the Odoo manager.
+        @param logger: a logger instance as returned by logging.getLogger.
+        @param host: the host name or ip of the Odoo server.
+        @type host: str.
+        @param port: the port Odoo server listens.
+        @type port: int.
+        @param user: Odoo user for login.
+        @type user: str.
+        @param password: Odoo password for login.
+        @type password: str.
+        @param db: Odoo db.
+        @type db: str.
+        """
         self.logger = logger
         self._host = connection_data.pop("host")
         self._port = connection_data.pop("port")
@@ -47,7 +68,6 @@ class OdooInstance(object):
         self.prod_obj = None
         self._default_data = {
             "sale_ok": True,
-            "purchase_ok": True,
             "active": True,
             "categ_id": 1,
             "uom_id": 1,
@@ -64,26 +84,12 @@ class OdooInstance(object):
         # self.relevant_fields = ("n_proyecto", "nombre", "id_cliente", "estado",
         #                         "id_resp", "fec_ini", "fec_cierre")
 
-    def __feed(self, data):
-        """This will work in bkg"""
-        pass
-
-    def feed(self, data):
-        """Use data to create or update a product"""
-        p = multiprocessing.Process(target=self.__feed, args=(data,))
-        p.start()
-
     def connect_to_odoo(self):
         """
-        keyword args:
-            @param db:
-            @param user:
-            @param password:
-            @param host:
-            @param port:
+        Do connect. It will try to connect 100 times with a pause of 30 seconds each 10 tries
         """
-        for j in range(1, 6):
-            for i in range(1, 6):
+        for j in range(1, 11):
+            for i in range(1, 11):
                 try:
                     host_port = "http://%s:%s" % (self._host, self._port)
                     self.logger.info("Creating connection with host: %s" % host_port)
@@ -96,7 +102,7 @@ class OdooInstance(object):
                     # self.employee_obj = self.client.model("hr.employee")
                     # self.resource_obj = self.client.model("resource.resource")
                     self.is_connected = True
-                    return True
+                    break
                 except ConnectionRefusedError:
                     self.logger.warning("Connection refused... retrying %s" % i)
                     time.sleep(3)
@@ -106,48 +112,93 @@ class OdooInstance(object):
             if self.is_connected:
                 break
 
-            self.logger.warning("Connection refused 5 times retrying in 150 seconds")
-            time.sleep(150)
-        return False
+            wait = 30
+            self.logger.warning("Connection refused 5 times retrying in %d seconds" % wait)
+            time.sleep(wait)
+        return self.is_connected
 
-    def create_product(self, product_data):
-        products = self.prod_obj.read([
-            ("name", "=", product_data["name"]),
-            ("default_code", "=", product_data["default_code"])
-        ])
-        if not products:
-            product_data.update(self._default_data)
-            product = self.prod_obj.create(product_data)
-            self.logger.info("New product created: [%s] %s" % (product.default_code, product.name))
-        else:
-            product = self.prod_obj.browse(products[0]["id"])
-            self.logger.info("Product found: [%s] %s" % (product.default_code, product.name))
-            new_price = float(product_data["list_price"])
-            if product.list_price != new_price:
-                self.logger.info("Update price: from %s to %s" % (product.list_price, new_price))
-                product.write({"list_price": new_price})
-        return product
+    def create_products(self, products_data, filename=''):
+        """
+        Create products.
+        @param products_data: list of dicts with fields required by product.product object.
+        @param filename: name of the file currently being processed. Useful just for logging.
+        @type filename: str.
+        """
+        for data in products_data:
+            products = self.prod_obj.read([
+                ("name", "=", data["name"]),
+                ("default_code", "=", data["default_code"])
+            ])
+            if not products:
+                data.update(self._default_data)
+                product = self.prod_obj.create(data)
+                self.logger.info("(%s) New product created: [%s] %s" % (filename,
+                                                                        product.default_code,
+                                                                        product.name))
+            else:
+                product = self.prod_obj.browse(products[0]["id"])
+                self.logger.info("(%s) Product found: [%s] %s" % (filename, product.default_code,
+                                                                  product.name))
+                new_price = float(data["list_price"])
+                if round(product.list_price, 3) != new_price:
+                    self.logger.info("(%s) Update price: from %s to %s" % (filename,
+                                                                           product.list_price,
+                                                                           new_price))
+                    product.write({"list_price": new_price})
+        return True
+
+
+class ProcessPool(object):
+    """
+    Manages process. Each CLOSE_WRITE event adds an open file to the pool of processes.
+    """
+
+    pool = {}
+
+    def __init__(self, logger, odoo):
+        """
+        Instanciate the pool.
+        @param logger: a logger instance as returned by logging.getLogger.
+        @param odoo: the Odoo instance.
+        """
+        self.logger = logger
+        self.odoo = odoo
+
+    def loop(self):
+        """
+        It will loop forever and feed the Odoo instance
+        """
+        while True:
+            # shallow copy of the lists in the dict to avoid RuntimeError.
+            temporal_pool = dict(zip(self.pool.keys(), [v.copy() for v in self.pool.values()]))
+            processes = []
+            for filename, datadicts in temporal_pool.items():
+                self.pool[filename].clear()
+                self.logger.info("Start processing file: %s" % filename)
+                process = Process(target=self.odoo.create_products, args=(datadicts, filename))
+                processes.append(process)
+                process.start()
+                if not self.pool[filename]:
+                    self.pool.pop(filename)
+            for process in processes:
+                process.join()
+            del temporal_pool, processes
+            time.sleep(10)
 
 
 class EventHandler(ProcessEvent):
+    """
+    Main event handler.
+    """
 
-    def my_init(self, odoo, logger, dir_to_watch=None, masks=None, regex='.*', delimiter='\t'):
+    def my_init(self, odoo, logger, dir_to_watch=None, regex='.*', delimiter='\t'):
         self.logger = logger
-        self.odoo = odoo
         self.logger.info("Starting event handler")
+        self.odoo = odoo
         self.regex = regex
-        self.count = 0
         self.delimiter = delimiter
         self._create_dir(dir_to_watch)
         self._fieldnames = ("name", "list_price", "default_code")
-        if masks is None:
-            self.masks = IN_CLOSE_WRITE | IN_DELETE | IN_DELETE_SELF
-        else:
-            self.masks = masks
-        wm = WatchManager()
-        wm.add_watch(self.dir_to_watch, self.masks)
-        notifier = Notifier(wm, self)
-        self.notifier = notifier
 
     @property
     def regex(self):
@@ -183,42 +234,93 @@ class EventHandler(ProcessEvent):
 
     def process_IN_CLOSE_WRITE(self, event):
         """
-        When file is written
+        When file is written to disk and closed
         """
+        # pathname is full path and name is the path relative to the watched dir.
         pathname = event.pathname
+        name = event.name
         self.logger.info("close write on file: %s" % pathname)
-        if re.match(self.regex, os.path.split(pathname)[-1]):
-            logger.info("CSV file found: %s, let's parse it!" % pathname)
+        if re.match(self.regex, name):
+            self.logger.info("CSV file found: %s, let's parse it!" % pathname)
             with open(pathname, newline='') as csvfile:
-                csvdict = csv.DictReader(
+                csvdicts = csv.DictReader(
                     csvfile,
                     fieldnames=self.fieldnames,
                     delimiter=self.delimiter,
                 )
-                for line in csvdict:
-                    self.odoo.create_product(line)
-            #     jobs = []
-            #     for data in csvdict:
-            #         self.count += 1
-            #         job = multiprocessing.Process(
-            #             name="Process-%s" % self.count,
-            #             target=self.odoo.create_product,
-            #             args=(data,)
-            #         )
-            #         jobs.append(job)
-            #         job.start()
-            # for job in jobs:
-            #     job.join()
+                csvdicts = list(csvdicts)
+                ProcessPool.pool.setdefault(name, []).extend(csvdicts)
         return True
 
+
+def main(**options):
+    """
+    Main function. It will create instances of Odoo Server, EventHandler, ThreadedNotifier and
+    ProcessPool.
+    """
+    logger = logging.getLogger(PROGNAME)
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
+    logfile = options["logfile"]
+    if logfile is None:
+        streamH = logging.StreamHandler(sys.stdout)
+    else:
+        streamH = logging.FileHandler(logfile)
+    streamH.setFormatter(formatter)
+    logger.addHandler(streamH)
+    logger.info("Started")
+
+    odoo = OdooInstance(
+        logger,
+        db=options["db"],
+        user=options["user"],
+        password=options["password"],
+        host=options["host"],
+        port=options["port"],
+    )
+    odoo.connect_to_odoo()
+    exit_code = 0
+    if odoo.is_connected:
+        count = 0
+        while True:
+            count += 1
+            try:
+                event_handler = EventHandler(
+                    odoo=odoo,
+                    logger=logger,
+                    dir_to_watch=options["dir_to_watch"],
+                    regex=options["regex"],
+                    delimiter=options["delimiter"],
+                )
+                # start loop handler
+                masks = IN_CLOSE_WRITE | IN_DELETE | IN_DELETE_SELF
+                wm = WatchManager()
+                wm.add_watch(event_handler.dir_to_watch, masks)
+                notifier = ThreadedNotifier(wm, default_proc_fun=event_handler)
+                notifier.start()
+                pool = ProcessPool(logger, odoo)
+                pool.loop()
+            except (KeyboardInterrupt, EOFError):
+                logger.info("\nReceived signal to exit! Goodbye")
+                break
+            except:
+                logger.error("ERROR! \n%s" % traceback.print_exception(*sys.exc_info()))
+            finally:
+                if notifier:
+                    notifier.stop()
+                if count >= 50:
+                    logger.error("ERROR! Too many tries, aborting!")
+                    break
+    else:
+        logger.critical("Can't connect to odoo")
+        exit_code = 1
+        exit(exit_code)
+
 if __name__ == '__main__':
-    import logging
     from argparse import ArgumentParser
 
-    prog_name = 'NotifyCSV'
     default_dir = os.path.join(os.environ['HOME'], "csv-input")
-    logger = logging.getLogger(prog_name)
-    parser = ArgumentParser(prog=prog_name)
+    parser = ArgumentParser(prog=PROGNAME)
 
     parser.add_argument("-d", "--delimiter", help="Specify field delimiter. Default: '\\t'",
                         default='\t')
@@ -227,7 +329,7 @@ if __name__ == '__main__':
                               "Python regex. Default: '^.+\.[cC][sS][vV]$'")
                         )
     parser.add_argument("-l", "--logfile", help="Log to this file")
-    parser.add_argument("-w", "--watch-dir", help="Dir to watch. Default: %s" % default_dir,
+    parser.add_argument("-w", "--dir-to-watch", help="Dir to watch. Default: %s" % default_dir,
                         default=default_dir)
     parser.add_argument("-u", "--user", help="OpenERP/Odoo user. Default: admin", default="admin")
     parser.add_argument("-p", "--password", help="OpenERP/Odoo user password. Default: admin",
@@ -241,37 +343,14 @@ if __name__ == '__main__':
 
     options = parser.parse_args()
 
-    logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
-    logfile = options.logfile
-    if logfile is None:
-        streamH = logging.StreamHandler(sys.stdout)
-    else:
-        streamH = logging.FileHandler(logfile)
-    streamH.setFormatter(formatter)
-    logger.addHandler(streamH)
-    logger.info("Started")
-
-    odoo = OdooInstance(
-        logger,
+    main(
+        delimiter=options.delimiter,
+        regex=options.regex,
+        logfile=options.logfile,
         db=options.db,
+        dir_to_watch=options.dir_to_watch,
         user=options.user,
         password=options.password,
         host=options.host,
-        port=options.port,
+        port=options.port
     )
-    odoo.connect_to_odoo()
-
-    if odoo.is_connected:
-        event_handler = EventHandler(
-            odoo=odoo,
-            logger=logger,
-            dir_to_watch=options.watch_dir,
-            regex=options.regex,
-            delimiter=options.delimiter,
-        )
-        # start handler loop
-        event_handler.notifier.loop()
-    else:
-        logger.critical("Can't connect to odoo")
-        exit(1)

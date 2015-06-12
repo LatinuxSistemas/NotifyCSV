@@ -26,6 +26,8 @@ It's running!
 Use it 
 ------
 
+### Command line options
+
     ~$ fades notify_csv.py -h
 
     usage: NotifyCSV [-h] [-d DELIMITER] [-r REGEX] [-l LOGFILE] [-w WATCH_DIR]
@@ -48,6 +50,8 @@ Use it
       -s HOST, --host HOST  OpenERP/Odoo host. Default: localhost
       -P PORT, --port PORT  Port OpenERP/Odoo is listening. Default: 8069
       -b DB, --db DB        OpenERP/Odoo database to use. Required!
+
+### Sample running output
 
     ~$ fades notify_csv.py 
 
